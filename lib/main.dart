@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_pdf/views/split_view.dart';
+import 'package:flutter_pdf/views/compress_view.dart';
+import 'package:flutter_pdf/views/view_pdf_view.dart';
 import 'views/merge_view.dart'; // Import your MergeView file
 
 void main() {
@@ -22,8 +24,8 @@ class HomePage extends StatelessWidget {
   final List<Map<String, dynamic>> operations = [
     {'title': 'Merge PDFs', 'icon': Icons.merge_type, 'screen': MergeView()},
     {'title': 'Split PDF', 'icon': Icons.content_cut, 'screen': SplitView()},
-    {'title': 'Compress PDF', 'icon': Icons.compress, 'screen': DummyScreen(title: 'Compress PDF')},
-    {'title': 'View PDF', 'icon': Icons.picture_as_pdf, 'screen': DummyScreen(title: 'View PDF')},
+    {'title': 'Compress PDF', 'icon': Icons.compress, 'screen': CompressView()},
+    {'title': 'View PDF', 'icon': Icons.picture_as_pdf, 'screen': ViewPdfPage()},
     {'title': 'Encrypt PDF', 'icon': Icons.lock_outline, 'screen': DummyScreen(title: 'Encrypt PDF')},
     {'title': 'Unlock PDF', 'icon': Icons.lock_open, 'screen': DummyScreen(title: 'Unlock PDF')},
   ];

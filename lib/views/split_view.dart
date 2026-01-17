@@ -21,10 +21,22 @@ class _SplitViewState extends State<SplitView> {
   pdfx.PdfDocument? _doc;
   int _pageCount = 0;
 
-  // Cache thumbnails: pageIndex -> bytes
+  // Thumbnails cache: pageIndex(1-based) -> bytes future
   final Map<int, Future<Uint8List?>> _thumbCache = {};
-  // Selected pages (1-based indices, to be user-friendly)
+
+  // Current selected pages (1-based)
   final Set<int> _selected = {};
+
+  // Selection snapshot taken when pressing "Start range"
+  Set<int> _baseSelection = {};
+
+  // For showing "Start range" on last tapped page (when not in range mode)
+  int? _lastTappedPage;
+
+  // Range-selection state
+  bool _rangeSelecting = false;
+  int? _rangeStart;
+  int? _rangeEnd;
 
   // --- Pick a PDF ---
   Future<void> _pickPdf() async {
@@ -33,16 +45,20 @@ class _SplitViewState extends State<SplitView> {
     );
     if (file == null) return;
 
-    // Close any previous document
     await _doc?.close();
-
     final doc = await pdfx.PdfDocument.openFile(file.path);
+
     setState(() {
       _pdfFile = file;
       _doc = doc;
       _pageCount = doc.pagesCount;
       _thumbCache.clear();
       _selected.clear();
+      _baseSelection = {};
+      _lastTappedPage = null;
+      _rangeSelecting = false;
+      _rangeStart = null;
+      _rangeEnd = null;
     });
   }
 
@@ -51,7 +67,7 @@ class _SplitViewState extends State<SplitView> {
     return _thumbCache.putIfAbsent(pageNumber, () async {
       final page = await _doc!.getPage(pageNumber);
       final img = await page.render(
-        width: 220,      // render a bit bigger, we’ll fit it down
+        width: 220,
         height: 300,
         format: pdfx.PdfPageImageFormat.jpeg,
       );
@@ -68,16 +84,12 @@ class _SplitViewState extends State<SplitView> {
     final input = sf.PdfDocument(inputBytes: bytes);
     final output = sf.PdfDocument();
 
-    // Keep selection order
     final pages = _selected.toList()..sort();
-
     for (final pageNumber in pages) {
-      final srcPage = input.pages[pageNumber - 1];
-      final template = srcPage.createTemplate();
-
-      // Add page and draw the template at (0,0)
+      final src = input.pages[pageNumber - 1];
+      final tpl = src.createTemplate();
       final newPage = output.pages.add();
-      newPage.graphics.drawPdfTemplate(template, const Offset(0, 0));
+      newPage.graphics.drawPdfTemplate(tpl, const Offset(0, 0));
     }
 
     final outBytes = output.saveSync();
@@ -85,15 +97,14 @@ class _SplitViewState extends State<SplitView> {
     output.dispose();
 
     final downloads = await _getDownloadsDir();
-    final outPath = '${downloads.path}/${_baseName(_pdfFile!.name)}_split.pdf';
-    final f = File(outPath);
-    await f.writeAsBytes(outBytes, flush: true);
+    final outPath =
+        '${downloads.path}/${_baseName(_pdfFile!.name)}_split.pdf';
+    await File(outPath).writeAsBytes(outBytes, flush: true);
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Saved to: $outPath')),
     );
-
     await OpenFilex.open(outPath);
   }
 
@@ -119,13 +130,58 @@ class _SplitViewState extends State<SplitView> {
     return i > 0 ? name.substring(0, i) : name;
   }
 
-  void _toggle(int page) {
+  // --- Selection logic ---
+  void _toggleSingle(int page) {
     setState(() {
       if (_selected.contains(page)) {
         _selected.remove(page);
       } else {
         _selected.add(page);
       }
+      _lastTappedPage = page;
+    });
+  }
+
+  void _startRangeAt(int page) {
+    setState(() {
+      _rangeSelecting = true;
+      _rangeStart = page;
+      _rangeEnd = null;
+      // snapshot current selection so ranges accumulate
+      _baseSelection = Set<int>.from(_selected);
+    });
+  }
+
+  void _updateRangeEnd(int page) {
+    if (!_rangeSelecting || _rangeStart == null) return;
+
+    final s = _rangeStart!;
+    final e = page;
+    final from = s < e ? s : e;
+    final to = s < e ? e : s;
+
+    // Range pages from 'from'..'to'
+    final rangePages = List<int>.generate(to - from + 1, (i) => from + i);
+
+    setState(() {
+      _rangeEnd = page;
+      // Show base selection UNION live range (doesn't lose existing)
+      _selected
+        ..clear()
+        ..addAll(_baseSelection)
+        ..addAll(rangePages);
+      _lastTappedPage = page;
+    });
+  }
+
+  void _endRange() {
+    if (!_rangeSelecting) return;
+    setState(() {
+      _rangeSelecting = false;
+      _rangeStart = null;
+      _rangeEnd = null;
+      _baseSelection = {};
+      // keep _selected as-is (base ∪ chosen range)
     });
   }
 
@@ -134,11 +190,22 @@ class _SplitViewState extends State<SplitView> {
       _selected
         ..clear()
         ..addAll(List<int>.generate(_pageCount, (i) => i + 1));
+      _rangeSelecting = false;
+      _rangeStart = null;
+      _rangeEnd = null;
+      _baseSelection = {};
     });
   }
 
   void _clearSelection() {
-    setState(() => _selected.clear());
+    setState(() {
+      _selected.clear();
+      _rangeSelecting = false;
+      _rangeStart = null;
+      _rangeEnd = null;
+      _baseSelection = {};
+      _lastTappedPage = null;
+    });
   }
 
   @override
@@ -177,24 +244,34 @@ class _SplitViewState extends State<SplitView> {
                 crossAxisCount: 3,
                 mainAxisSpacing: 12,
                 crossAxisSpacing: 12,
-                childAspectRatio: 3 / 4, // portrait thumbnail
+                childAspectRatio: 3 / 4,
               ),
               itemCount: _pageCount,
               itemBuilder: (context, i) {
                 final page = i + 1;
                 final selected = _selected.contains(page);
+                final isRangeStart = _rangeSelecting && _rangeStart == page;
+                final isRangeEnd = _rangeSelecting && _rangeEnd == page;
+
                 return InkWell(
-                  onTap: () => _toggle(page),
+                  onTap: () {
+                    if (_rangeSelecting) {
+                      _updateRangeEnd(page);
+                    } else {
+                      _toggleSingle(page);
+                    }
+                  },
                   child: Stack(
                     children: [
                       // Card with thumbnail
                       Positioned.fill(
                         child: Card(
-                          elevation: selected ? 6 : 2,
+                          elevation:
+                              (selected || isRangeStart || isRangeEnd) ? 6 : 2,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8),
                             side: BorderSide(
-                              color: selected
+                              color: (selected || isRangeStart || isRangeEnd)
                                   ? Theme.of(context).colorScheme.primary
                                   : Colors.transparent,
                               width: 2,
@@ -207,11 +284,13 @@ class _SplitViewState extends State<SplitView> {
                               if (snap.connectionState ==
                                   ConnectionState.waiting) {
                                 return const Center(
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
                                 );
                               }
                               if (!snap.hasData || snap.data == null) {
-                                return const Center(child: Icon(Icons.picture_as_pdf));
+                                return const Center(
+                                    child: Icon(Icons.picture_as_pdf));
                               }
                               return Image.memory(
                                 snap.data!,
@@ -221,6 +300,7 @@ class _SplitViewState extends State<SplitView> {
                           ),
                         ),
                       ),
+
                       // Page number badge
                       Positioned(
                         left: 6,
@@ -232,20 +312,66 @@ class _SplitViewState extends State<SplitView> {
                             color: Colors.black.withOpacity(0.5),
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Text(
-                            '$page',
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 12),
+                          child: const Text(
+                            ' ',
+                            style: TextStyle(color: Colors.white, fontSize: 12),
                           ),
                         ),
                       ),
-                      // Check icon when selected
-                      if (selected)
-                        const Positioned(
+
+                      // Check or endpoints
+                      if (selected || isRangeStart || isRangeEnd)
+                        Positioned(
                           right: 6,
                           top: 6,
-                          child: Icon(Icons.check_circle,
-                              color: Colors.lightGreenAccent),
+                          child: Icon(
+                            isRangeStart
+                                ? Icons.playlist_add_check_circle
+                                : isRangeEnd
+                                    ? Icons.task_alt
+                                    : Icons.check_circle,
+                            color: Colors.lightGreenAccent,
+                          ),
+                        ),
+
+                      // Start range chip (only when not in range mode)
+                      if (!_rangeSelecting &&
+                          selected &&
+                          _lastTappedPage == page)
+                        Positioned(
+                          left: 8,
+                          right: 8,
+                          bottom: 8,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orange.shade700,
+                              foregroundColor: Colors.white,
+                              minimumSize: const Size.fromHeight(32),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 6),
+                            ),
+                            onPressed: () => _startRangeAt(page),
+                            child: const Text('Start range'),
+                          ),
+                        ),
+
+                      // End range chip (only on current end page while in range mode)
+                      if (_rangeSelecting && _rangeEnd == page)
+                        Positioned(
+                          left: 8,
+                          right: 8,
+                          bottom: 8,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green.shade700,
+                              foregroundColor: Colors.white,
+                              minimumSize: const Size.fromHeight(32),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 6),
+                            ),
+                            onPressed: _endRange,
+                            child: const Text('End range'),
+                          ),
                         ),
                     ],
                   ),
@@ -257,12 +383,13 @@ class _SplitViewState extends State<SplitView> {
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
           child: Row(
             children: [
-              // Left half: Split (only if canSplit), keep slot so Add remains right
+              // Left half: Split (only if canSplit)
               Expanded(
-                child: canSplit
+                child: (_pdfFile != null && _selected.isNotEmpty)
                     ? ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.orange.shade600,
+                          foregroundColor: Colors.white,
                         ),
                         onPressed: _splitSelected,
                         icon: const Icon(Icons.call_split),
@@ -271,11 +398,12 @@ class _SplitViewState extends State<SplitView> {
                     : const SizedBox.shrink(),
               ),
               const SizedBox(width: 12),
-              // Right half: Add/Open (always visible)
+              // Right half: Open/Change PDF
               Expanded(
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green.shade600,
+                    foregroundColor: Colors.white,
                   ),
                   onPressed: _pickPdf,
                   icon: const Icon(Icons.folder_open),

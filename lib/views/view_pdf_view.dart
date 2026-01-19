@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:pdfx/pdfx.dart' as pdfx;
+import 'package:flutter_pdf/utils/pdf_security_helper.dart';
 
 class ViewPdfPage extends StatefulWidget {
   const ViewPdfPage({Key? key}) : super(key: key);
@@ -23,37 +25,50 @@ class _ViewPdfPageState extends State<ViewPdfPage> {
 
   Future<void> _openPdf() async {
     final file = await openFile(
-      acceptedTypeGroups: [XTypeGroup(label: 'PDF', extensions: ['pdf'])],
+      acceptedTypeGroups: [
+        XTypeGroup(label: 'PDF', extensions: ['pdf']),
+      ],
     );
     if (file == null) return;
+
+    // Check security / decrypt if needed
+    final String? readablePath = await PdfSecurityHelper.ensureReadable(
+      context,
+      file.path,
+    );
+    if (readablePath == null) return; // User cancelled or error
 
     setState(() => _busy = true);
 
     try {
-      // read page count first for UI
-      final tmpDoc = await pdfx.PdfDocument.openFile(file.path);
-      final pages = tmpDoc.pagesCount;
-      await tmpDoc.close();
-
-      final controller = pdfx.PdfControllerPinch(
-        // expects Future<PdfDocument>
-        document: pdfx.PdfDocument.openFile(file.path),
-      );
-
-      _controller?.dispose();
-      setState(() {
-        _controller = controller;
-        _fileName = file.name;
-        _pagesCount = pages;
-        _busy = false;
-      });
+      await _loadPdfFile(readablePath, originalName: file.name);
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to open PDF: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to open PDF: $e')));
     }
+  }
+
+  Future<void> _loadPdfFile(String path, {String? originalName}) async {
+    // read page count first for UI
+    final tmpDoc = await pdfx.PdfDocument.openFile(path);
+    final pages = tmpDoc.pagesCount;
+    await tmpDoc.close();
+
+    final controller = pdfx.PdfControllerPinch(
+      // expects Future<PdfDocument>
+      document: pdfx.PdfDocument.openFile(path),
+    );
+
+    _controller?.dispose();
+    setState(() {
+      _controller = controller;
+      _fileName = originalName ?? path.split(Platform.pathSeparator).last;
+      _pagesCount = pages;
+      _busy = false;
+    });
   }
 
   Future<void> _jumpToPageDialog() async {
@@ -123,7 +138,10 @@ class _ViewPdfPageState extends State<ViewPdfPage> {
                 preferredSize: const Size.fromHeight(28),
                 child: Container(
                   alignment: Alignment.centerLeft,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 6,
+                  ),
                   child: Text(
                     _fileName!,
                     style: const TextStyle(fontSize: 13, color: Colors.white70),
@@ -135,100 +153,112 @@ class _ViewPdfPageState extends State<ViewPdfPage> {
       body: _busy
           ? const Center(child: CircularProgressIndicator())
           : hasDoc
-              ? Column(
-                  children: [
-                    Expanded(
-                      child: pdfx.PdfViewPinch(
-                        controller: _controller!,
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.5),
-                      child: ValueListenableBuilder<int>(
-                        valueListenable: _controller!.pageListenable,
-                        builder: (_, current, __) {
-                          final page = current.clamp(1, _pagesCount);
-                          return Column(
+          ? Column(
+              children: [
+                Expanded(child: pdfx.PdfViewPinch(controller: _controller!)),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.surfaceVariant.withOpacity(0.5),
+                  child: ValueListenableBuilder<int>(
+                    valueListenable: _controller!.pageListenable,
+                    builder: (_, current, __) {
+                      final page = current.clamp(1, _pagesCount);
+                      return Column(
+                        children: [
+                          Row(
                             children: [
-                              Row(
-                                children: [
-                                  IconButton(
-                                    tooltip: 'Previous page',
-                                    icon: const Icon(Icons.chevron_left),
-                                    onPressed: page > 1
-                                        ? () => _controller!.previousPage(
-                                              duration: const Duration(milliseconds: 150),
-                                              curve: Curves.easeOut,
-                                            )
-                                        : null,
-                                  ),
-                                  Text(
-                                    'Page $page / $_pagesCount',
-                                    style: const TextStyle(fontWeight: FontWeight.w600),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Next page',
-                                    icon: const Icon(Icons.chevron_right),
-                                    onPressed: page < _pagesCount
-                                        ? () => _controller!.nextPage(
-                                              duration: const Duration(milliseconds: 150),
-                                              curve: Curves.easeOut,
-                                            )
-                                        : null,
-                                  ),
-                                  const Spacer(),
-                                  TextButton.icon(
-                                    onPressed: _jumpToPageDialog,
-                                    icon: const Icon(Icons.input),
-                                    label: const Text('Go to'),
-                                  ),
-                                ],
-                              ),
-                              Row(
-                                children: [
-                                  const Text('1'),
-                                  Expanded(
-                                    child: Slider(
-                                      min: 1,
-                                      max: (_pagesCount == 0 ? 1 : _pagesCount).toDouble(),
-                                      value: page.toDouble(),
-                                      onChanged: (v) => _controller!.animateToPage(
-                                        pageNumber: v.round(),
-                                        duration: const Duration(milliseconds: 150),
+                              IconButton(
+                                tooltip: 'Previous page',
+                                icon: const Icon(Icons.chevron_left),
+                                onPressed: page > 1
+                                    ? () => _controller!.previousPage(
+                                        duration: const Duration(
+                                          milliseconds: 150,
+                                        ),
                                         curve: Curves.easeOut,
-                                      ),
-                                    ),
-                                  ),
-                                  Text('$_pagesCount'),
-                                ],
+                                      )
+                                    : null,
+                              ),
+                              Text(
+                                'Page $page / $_pagesCount',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Next page',
+                                icon: const Icon(Icons.chevron_right),
+                                onPressed: page < _pagesCount
+                                    ? () => _controller!.nextPage(
+                                        duration: const Duration(
+                                          milliseconds: 150,
+                                        ),
+                                        curve: Curves.easeOut,
+                                      )
+                                    : null,
+                              ),
+                              const Spacer(),
+                              TextButton.icon(
+                                onPressed: _jumpToPageDialog,
+                                icon: const Icon(Icons.input),
+                                label: const Text('Go to'),
                               ),
                             ],
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                )
-              : Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.picture_as_pdf, size: 72, color: Colors.redAccent),
-                      const SizedBox(height: 12),
-                      const Text('No PDF selected'),
-                      const SizedBox(height: 12),
-                      ElevatedButton(
-                        onPressed: _openPdf,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green,
-                          foregroundColor: Colors.white,
-                        ),
-                        child: const Text('Open PDF'),
-                      ),
-                    ],
+                          ),
+                          Row(
+                            children: [
+                              const Text('1'),
+                              Expanded(
+                                child: Slider(
+                                  min: 1,
+                                  max: (_pagesCount == 0 ? 1 : _pagesCount)
+                                      .toDouble(),
+                                  value: page.toDouble(),
+                                  onChanged: (v) => _controller!.animateToPage(
+                                    pageNumber: v.round(),
+                                    duration: const Duration(milliseconds: 150),
+                                    curve: Curves.easeOut,
+                                  ),
+                                ),
+                              ),
+                              Text('$_pagesCount'),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ),
+              ],
+            )
+          : Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.picture_as_pdf,
+                    size: 72,
+                    color: Colors.redAccent,
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('No PDF selected'),
+                  const SizedBox(height: 12),
+                  ElevatedButton(
+                    onPressed: _openPdf,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('Open PDF'),
+                  ),
+                ],
+              ),
+            ),
     );
   }
 }

@@ -8,6 +8,7 @@ import 'package:pdfx/pdfx.dart' as pdfx;
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:flutter_pdf/utils/pdf_security_helper.dart';
 
 class SplitView extends StatefulWidget {
   const SplitView({Key? key}) : super(key: key);
@@ -41,15 +42,25 @@ class _SplitViewState extends State<SplitView> {
   // --- Pick a PDF ---
   Future<void> _pickPdf() async {
     final file = await openFile(
-      acceptedTypeGroups: [XTypeGroup(label: 'PDF', extensions: ['pdf'])],
+      acceptedTypeGroups: [
+        XTypeGroup(label: 'PDF', extensions: ['pdf']),
+      ],
     );
     if (file == null) return;
 
+    // Check security / decrypt
+    final String? readablePath = await PdfSecurityHelper.ensureReadable(
+      context,
+      file.path,
+    );
+    if (readablePath == null) return;
+
     await _doc?.close();
-    final doc = await pdfx.PdfDocument.openFile(file.path);
+    final doc = await pdfx.PdfDocument.openFile(readablePath);
 
     setState(() {
-      _pdfFile = file;
+      // Use readable file (decrypted or original)
+      _pdfFile = XFile(readablePath, name: file.name);
       _doc = doc;
       _pageCount = doc.pagesCount;
       _thumbCache.clear();
@@ -97,14 +108,13 @@ class _SplitViewState extends State<SplitView> {
     output.dispose();
 
     final downloads = await _getDownloadsDir();
-    final outPath =
-        '${downloads.path}/${_baseName(_pdfFile!.name)}_split.pdf';
+    final outPath = '${downloads.path}/${_baseName(_pdfFile!.name)}_split.pdf';
     await File(outPath).writeAsBytes(outBytes, flush: true);
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Saved to: $outPath')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Saved to: $outPath')));
     await OpenFilex.open(outPath);
   }
 
@@ -266,8 +276,9 @@ class _SplitViewState extends State<SplitView> {
                       // Card with thumbnail
                       Positioned.fill(
                         child: Card(
-                          elevation:
-                              (selected || isRangeStart || isRangeEnd) ? 6 : 2,
+                          elevation: (selected || isRangeStart || isRangeEnd)
+                              ? 6
+                              : 2,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8),
                             side: BorderSide(
@@ -285,12 +296,14 @@ class _SplitViewState extends State<SplitView> {
                                   ConnectionState.waiting) {
                                 return const Center(
                                   child: CircularProgressIndicator(
-                                      strokeWidth: 2),
+                                    strokeWidth: 2,
+                                  ),
                                 );
                               }
                               if (!snap.hasData || snap.data == null) {
                                 return const Center(
-                                    child: Icon(Icons.picture_as_pdf));
+                                  child: Icon(Icons.picture_as_pdf),
+                                );
                               }
                               return Image.memory(
                                 snap.data!,
@@ -307,7 +320,9 @@ class _SplitViewState extends State<SplitView> {
                         top: 6,
                         child: Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
                           decoration: BoxDecoration(
                             color: Colors.black.withOpacity(0.5),
                             borderRadius: BorderRadius.circular(12),
@@ -328,8 +343,8 @@ class _SplitViewState extends State<SplitView> {
                             isRangeStart
                                 ? Icons.playlist_add_check_circle
                                 : isRangeEnd
-                                    ? Icons.task_alt
-                                    : Icons.check_circle,
+                                ? Icons.task_alt
+                                : Icons.check_circle,
                             color: Colors.lightGreenAccent,
                           ),
                         ),
@@ -347,8 +362,7 @@ class _SplitViewState extends State<SplitView> {
                               backgroundColor: Colors.orange.shade700,
                               foregroundColor: Colors.white,
                               minimumSize: const Size.fromHeight(32),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 6),
+                              padding: const EdgeInsets.symmetric(vertical: 6),
                             ),
                             onPressed: () => _startRangeAt(page),
                             child: const Text('Start range'),
@@ -366,8 +380,7 @@ class _SplitViewState extends State<SplitView> {
                               backgroundColor: Colors.green.shade700,
                               foregroundColor: Colors.white,
                               minimumSize: const Size.fromHeight(32),
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 6),
+                              padding: const EdgeInsets.symmetric(vertical: 6),
                             ),
                             onPressed: _endRange,
                             child: const Text('End range'),

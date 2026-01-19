@@ -3,6 +3,8 @@ import 'package:flutter_pdf/views/split_view.dart';
 import 'package:flutter_pdf/views/compress_view.dart';
 import 'package:flutter_pdf/views/view_pdf_view.dart';
 import 'views/merge_view.dart'; // Import your MergeView file
+import 'views/encrypt_view.dart';
+import 'views/unlock_view.dart';
 
 void main() {
   runApp(PdfToolkitApp());
@@ -25,9 +27,17 @@ class HomePage extends StatelessWidget {
     {'title': 'Merge PDFs', 'icon': Icons.merge_type, 'screen': MergeView()},
     {'title': 'Split PDF', 'icon': Icons.content_cut, 'screen': SplitView()},
     {'title': 'Compress PDF', 'icon': Icons.compress, 'screen': CompressView()},
-    {'title': 'View PDF', 'icon': Icons.picture_as_pdf, 'screen': ViewPdfPage()},
-    {'title': 'Encrypt PDF', 'icon': Icons.lock_outline, 'screen': DummyScreen(title: 'Encrypt PDF')},
-    {'title': 'Unlock PDF', 'icon': Icons.lock_open, 'screen': DummyScreen(title: 'Unlock PDF')},
+    {
+      'title': 'View PDF',
+      'icon': Icons.picture_as_pdf,
+      'screen': ViewPdfPage(),
+    },
+    {
+      'title': 'Encrypt PDF',
+      'icon': Icons.lock_outline,
+      'screen': EncryptPdfView(),
+    },
+    {'title': 'Unlock PDF', 'icon': Icons.lock_open, 'screen': UnlockPdfView()},
   ];
 
   @override
@@ -61,11 +71,7 @@ class OperationCard extends StatelessWidget {
   final IconData icon;
   final VoidCallback? onTap;
 
-  OperationCard({
-    required this.title,
-    required this.icon,
-    this.onTap,
-  });
+  OperationCard({required this.title, required this.icon, this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -93,7 +99,6 @@ class OperationCard extends StatelessWidget {
     );
   }
 }
-
 
 class DummyScreen extends StatelessWidget {
   final String title;

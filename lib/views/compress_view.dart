@@ -8,6 +8,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
 import 'package:pdfx/pdfx.dart' as pdfx;
 import 'package:image/image.dart' as img;
+import 'package:flutter_pdf/utils/pdf_security_helper.dart';
 
 class CompressView extends StatefulWidget {
   const CompressView({Key? key}) : super(key: key);
@@ -32,10 +33,18 @@ class _CompressViewState extends State<CompressView> {
 
   Future<void> _pickFile() async {
     final file = await openFile(
-      acceptedTypeGroups: [XTypeGroup(label: 'PDF', extensions: ['pdf'])],
+      acceptedTypeGroups: [
+        XTypeGroup(label: 'PDF', extensions: ['pdf']),
+      ],
     );
     if (file != null) {
-      setState(() => _selectedFile = file);
+      final String? readablePath = await PdfSecurityHelper.ensureReadable(
+        context,
+        file.path,
+      );
+      if (readablePath == null) return;
+
+      setState(() => _selectedFile = XFile(readablePath, name: file.name));
     }
   }
 
@@ -115,8 +124,10 @@ class _CompressViewState extends State<CompressView> {
 
     final outBytes = Uint8List.fromList(outBytesList);
     final downloads = await _downloadsDir();
-    final base =
-        _selectedFile!.name.replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '');
+    final base = _selectedFile!.name.replaceAll(
+      RegExp(r'\.pdf$', caseSensitive: false),
+      '',
+    );
     final outPath = '${downloads.path}/${base}_compressed_safe.pdf';
     return _writeOut(outBytes, outPath);
   }
@@ -164,9 +175,12 @@ class _CompressViewState extends State<CompressView> {
     final outBytes = Uint8List.fromList(outBytesList);
 
     final downloads = await _downloadsDir();
-    final base =
-        _selectedFile!.name.replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '');
-    final outPath = '${downloads.path}/${base}_compressed_${suffix.toLowerCase()}.pdf';
+    final base = _selectedFile!.name.replaceAll(
+      RegExp(r'\.pdf$', caseSensitive: false),
+      '',
+    );
+    final outPath =
+        '${downloads.path}/${base}_compressed_${suffix.toLowerCase()}.pdf';
     return _writeOut(outBytes, outPath);
   }
 
@@ -246,9 +260,9 @@ class _CompressViewState extends State<CompressView> {
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Compression failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Compression failed: $e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -279,7 +293,10 @@ class _CompressViewState extends State<CompressView> {
 
                   if (fileName != null) ...[
                     const SizedBox(height: 12),
-                    Text('Selected: $fileName', style: const TextStyle(fontSize: 16)),
+                    Text(
+                      'Selected: $fileName',
+                      style: const TextStyle(fontSize: 16),
+                    ),
 
                     const SizedBox(height: 16),
                     // Mode toggle
@@ -315,14 +332,15 @@ class _CompressViewState extends State<CompressView> {
                                 backgroundColor: i == 0
                                     ? Colors.blue
                                     : i == 1
-                                        ? Colors.orange
-                                        : Colors.red,
+                                    ? Colors.orange
+                                    : Colors.red,
                                 foregroundColor: Colors.white,
                               ),
                               child: Text(_levels[i]['label'] as String),
                             ),
                           ),
-                          if (i != _levels.length - 1) const SizedBox(width: 12),
+                          if (i != _levels.length - 1)
+                            const SizedBox(width: 12),
                         ],
                       ],
                     ),

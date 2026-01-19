@@ -7,6 +7,7 @@ import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
 import 'package:pdfx/pdfx.dart' as pdfx;
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:flutter_pdf/utils/pdf_security_helper.dart';
 
 class MergeView extends StatefulWidget {
   const MergeView({Key? key}) : super(key: key);
@@ -21,17 +22,31 @@ class _MergeViewState extends State<MergeView> {
 
   Future<void> _pickFiles() async {
     final files = await openFiles(
-      acceptedTypeGroups: [XTypeGroup(label: 'PDFs', extensions: ['pdf'])],
+      acceptedTypeGroups: [
+        XTypeGroup(label: 'PDFs', extensions: ['pdf']),
+      ],
     );
     if (files.isNotEmpty) {
-      setState(() {
-        for (final f in files) {
-          if (_pdfFiles.indexWhere((e) => e.path == f.path) == -1) {
-            _pdfFiles.add(f);
-            _thumbnailCache[f.path] = _renderFirstPage(f.path);
-          }
+      for (final f in files) {
+        if (_pdfFiles.indexWhere((e) => e.path == f.path) == -1) {
+          // Check security
+          if (!mounted) continue;
+          final String? readablePath = await PdfSecurityHelper.ensureReadable(
+            context,
+            f.path,
+          );
+          if (readablePath == null) continue; // Skip encrypted if cancelled
+
+          // Use readable path (decrypted temp file or original)
+          // We wrap it in XFile using the original name if possible for display
+          final XFile fileToAdd = XFile(readablePath, name: f.name);
+
+          setState(() {
+            _pdfFiles.add(fileToAdd);
+            _thumbnailCache[fileToAdd.path] = _renderFirstPage(fileToAdd.path);
+          });
         }
-      });
+      }
     }
   }
 
@@ -61,13 +76,17 @@ class _MergeViewState extends State<MergeView> {
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
           return SizedBox(
-            width: width, height: height,
-            child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            width: width,
+            height: height,
+            child: const Center(
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
           );
         }
         if (snap.hasError || snap.data == null) {
           return SizedBox(
-            width: width, height: height,
+            width: width,
+            height: height,
             child: const Center(child: Icon(Icons.error)),
           );
         }
@@ -108,10 +127,10 @@ class _MergeViewState extends State<MergeView> {
       final bytes = await f.readAsBytes();
       final input = sf.PdfDocument(inputBytes: bytes);
       for (int i = 0; i < input.pages.count; i++) {
-        out.pages
-            .add()
-            .graphics
-            .drawPdfTemplate(input.pages[i].createTemplate(), const Offset(0, 0));
+        out.pages.add().graphics.drawPdfTemplate(
+          input.pages[i].createTemplate(),
+          const Offset(0, 0),
+        );
       }
       input.dispose();
     }
@@ -123,9 +142,9 @@ class _MergeViewState extends State<MergeView> {
     await File(path).writeAsBytes(data, flush: true);
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Merged PDF saved to:\n$path')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Merged PDF saved to:\n$path')));
 
     await OpenFilex.open(path);
   }
@@ -135,9 +154,7 @@ class _MergeViewState extends State<MergeView> {
     final canMerge = _pdfFiles.length > 1;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Merge PDFs'),
-      ),
+      appBar: AppBar(title: const Text('Merge PDFs')),
       body: _pdfFiles.isEmpty
           ? const Center(child: Text('No PDF files selected.'))
           : ReorderableListView.builder(

@@ -5,10 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
-import 'package:pdfx/pdfx.dart' as pdfx;
-import 'package:image/image.dart' as img;
+import 'package:flutter/foundation.dart'; // for compute
+import 'package:flutter_pdf/services/pdf_service.dart';
 import 'package:flutter_pdf/utils/pdf_security_helper.dart';
+import 'package:flutter_pdf/utils/ui_utils.dart';
 
 class CompressView extends StatefulWidget {
   const CompressView({Key? key}) : super(key: key);
@@ -59,130 +59,7 @@ class _CompressViewState extends State<CompressView> {
     return await getApplicationDocumentsDirectory();
   }
 
-  // --- Helpers ---------------------------------------------------------------
-
-  Future<File> _writeOut(Uint8List bytes, String outPath) async {
-    final f = File(outPath);
-    await f.writeAsBytes(bytes, flush: true);
-    return f;
-  }
-
-  Future<void> _finalizeResult({
-    required int inputSize,
-    required File tentativeOut,
-    required String originalPath,
-    required String prettyOutPath,
-    required Future<void> Function() onOpen,
-    double requireImprovement = 0.98, // must be <= 98% of original (2%+ better)
-  }) async {
-    final outSize = await tentativeOut.length();
-
-    // If not smaller enough, keep original instead
-    if (outSize >= (inputSize * requireImprovement)) {
-      final originalBytes = await File(originalPath).readAsBytes();
-      await tentativeOut.writeAsBytes(originalBytes, flush: true);
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(seconds: 5),
-          content: Text(
-            'No size improvement; original kept:\n$prettyOutPath\n'
-            'Size: ${(inputSize / 1024).toStringAsFixed(1)} KB',
-          ),
-        ),
-      );
-      await onOpen();
-      return;
-    }
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(seconds: 5),
-        content: Text(
-          'Saved to:\n$prettyOutPath\n'
-          'Size: ${(inputSize / 1024).toStringAsFixed(1)} KB → ${(outSize / 1024).toStringAsFixed(1)} KB',
-        ),
-      ),
-    );
-    await onOpen();
-  }
-
   // --- SAFE MODE (keep text) ------------------------------------------------
-
-  Future<File> _compressSafeOnce(String inPath) async {
-    final inputBytes = await File(inPath).readAsBytes();
-    final doc = sf.PdfDocument(inputBytes: inputBytes);
-
-    // Internal stream compression
-    doc.compressionLevel = sf.PdfCompressionLevel.best;
-    doc.fileStructure.incrementalUpdate = false;
-
-    final outBytesList = doc.saveSync(); // List<int>
-    doc.dispose();
-
-    final outBytes = Uint8List.fromList(outBytesList);
-    final downloads = await _downloadsDir();
-    final base = _selectedFile!.name.replaceAll(
-      RegExp(r'\.pdf$', caseSensitive: false),
-      '',
-    );
-    final outPath = '${downloads.path}/${base}_compressed_safe.pdf';
-    return _writeOut(outBytes, outPath);
-  }
-
-  // --- RASTER MODE (max shrink) --------------------------------------------
-
-  Future<File> _compressRasterOnce({
-    required String inPath,
-    required double scale,
-    required int jpeg,
-    required String suffix,
-  }) async {
-    final pdfDoc = await pdfx.PdfDocument.openFile(inPath);
-    final outDoc = sf.PdfDocument();
-
-    outDoc.fileStructure.incrementalUpdate = false;
-
-    // Process page-by-page to avoid OOM
-    for (int i = 1; i <= pdfDoc.pagesCount; i++) {
-      final page = await pdfDoc.getPage(i);
-      final rendered = await page.render(
-        width: page.width * scale,
-        height: page.height * scale,
-        format: pdfx.PdfPageImageFormat.png, // good input for re-encode
-      );
-      await page.close();
-
-      if (rendered == null) continue;
-
-      final decoded = img.decodeImage(rendered.bytes);
-      if (decoded == null) continue;
-
-      // JPEG re-encode
-      final jpgBytes = img.encodeJpg(decoded, quality: jpeg);
-
-      final newPage = outDoc.pages.add();
-      newPage.graphics.drawImage(
-        sf.PdfBitmap(Uint8List.fromList(jpgBytes)),
-        Rect.fromLTWH(0, 0, newPage.size.width, newPage.size.height),
-      );
-    }
-
-    final outBytesList = outDoc.saveSync(); // List<int>
-    outDoc.dispose();
-    final outBytes = Uint8List.fromList(outBytesList);
-
-    final downloads = await _downloadsDir();
-    final base = _selectedFile!.name.replaceAll(
-      RegExp(r'\.pdf$', caseSensitive: false),
-      '',
-    );
-    final outPath =
-        '${downloads.path}/${base}_compressed_${suffix.toLowerCase()}.pdf';
-    return _writeOut(outBytes, outPath);
-  }
 
   // Orchestrates compression with auto-fallback if not smaller
   Future<void> _onCompressTap(Map<String, Object> level) async {
@@ -194,6 +71,7 @@ class _CompressViewState extends State<CompressView> {
     }
 
     setState(() => _busy = true);
+    LoadingOverlay.show(context);
 
     final inPath = _selectedFile!.path;
     final inFile = File(inPath);
@@ -205,58 +83,84 @@ class _CompressViewState extends State<CompressView> {
         double scale = level['scale'] as double;
         int jpeg = level['jpeg'] as int;
 
-        // First attempt with requested settings
-        File outFile = await _compressRasterOnce(
-          inPath: inPath,
-          scale: scale,
-          jpeg: jpeg,
-          suffix: label,
+        // Prepare temp output path
+        final downloads = await _downloadsDir();
+        final base = _selectedFile!.name.replaceAll(
+          RegExp(r'\.pdf$', caseSensitive: false),
+          '',
+        );
+        final suffix = '_${label.toLowerCase()}';
+        final outPath = '${downloads.path}/${base}_compressed$suffix.pdf';
+
+        // First attempt
+        await compute(
+          PdfService.compressRaster,
+          CompressRasterArguments(
+            path: inPath,
+            scale: scale,
+            quality: jpeg,
+            outPath: outPath,
+          ),
         );
 
+        // Check size
+        File outFile = File(outPath);
         int outSize = await outFile.length();
-        // If not reduced at least ~2%, try stronger once
+
         if (outSize >= (inSize * 0.98)) {
+          // Try stronger
           scale = (scale * 0.9).clamp(0.2, 1.0);
           jpeg = (jpeg - 10).clamp(40, 95);
-          outFile = await _compressRasterOnce(
-            inPath: inPath,
-            scale: scale,
-            jpeg: jpeg,
-            suffix: '${label}_strong',
+
+          await compute(
+            PdfService.compressRaster,
+            CompressRasterArguments(
+              path: inPath,
+              scale: scale,
+              quality: jpeg,
+              outPath: outPath,
+            ),
           );
+          outSize = await outFile.length();
         }
 
-        final prettyOutPath = outFile.path;
-        await _finalizeResult(
-          inputSize: inSize,
-          tentativeOut: outFile,
-          originalPath: inPath,
-          prettyOutPath: prettyOutPath,
-          onOpen: () async => OpenFilex.open(outFile.path),
-        );
+        await _showResult(outPath, inSize, outSize);
       } else {
         // SAFE MODE
-        File outFile = await _compressSafeOnce(inPath);
+        final downloads = await _downloadsDir();
+        final base = _selectedFile!.name.replaceAll(
+          RegExp(r'\.pdf$', caseSensitive: false),
+          '',
+        );
+        String outPath = '${downloads.path}/${base}_compressed_safe.pdf';
 
-        // If not smaller, attempt a raster fallback with gentle settings
+        await compute(
+          PdfService.compressSafe,
+          CompressSafeArguments(path: inPath, outPath: outPath),
+        );
+
+        File outFile = File(outPath);
         int outSize = await outFile.length();
+
         if (outSize >= (inSize * 0.98)) {
-          outFile = await _compressRasterOnce(
-            inPath: inPath,
-            scale: 0.9,
-            jpeg: 85,
-            suffix: 'safe_fallback',
+          // Fallback to gentle raster
+          outPath = '${downloads.path}/${base}_compressed_safe_fallback.pdf';
+
+          await compute(
+            PdfService.compressRaster,
+            CompressRasterArguments(
+              path: inPath,
+              scale: 0.9,
+              quality: 85,
+              outPath: outPath,
+            ),
           );
+
+          outFile = File(outPath);
+          outSize = await outFile.length();
         }
 
-        final prettyOutPath = outFile.path;
-        await _finalizeResult(
-          inputSize: inSize,
-          tentativeOut: outFile,
-          originalPath: inPath,
-          prettyOutPath: prettyOutPath,
-          onOpen: () async => OpenFilex.open(outFile.path),
-        );
+        await _showResult(outPath, inSize, outSize);
       }
     } catch (e) {
       if (!mounted) return;
@@ -264,8 +168,43 @@ class _CompressViewState extends State<CompressView> {
         context,
       ).showSnackBar(SnackBar(content: Text('Compression failed: $e')));
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        LoadingOverlay.hide(context);
+        setState(() => _busy = false);
+      }
     }
+  }
+
+  Future<void> _showResult(
+    String outPath,
+    int originalSize,
+    int newSize,
+  ) async {
+    // If result is bigger/same, keep original (well, we already saved it, but we can warn user)
+    if (newSize >= (originalSize * 0.98)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'No size improvement.\nOriginal: ${(originalSize / 1024).toStringAsFixed(1)} KB',
+          ),
+        ),
+      );
+      // Optional: Delete the larger file? User might want to keep it anyway.
+      return;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 5),
+        content: Text(
+          'Saved to:\n$outPath\n'
+          'Size: ${(originalSize / 1024).toStringAsFixed(1)} KB → ${(newSize / 1024).toStringAsFixed(1)} KB',
+        ),
+      ),
+    );
+    await OpenFilex.open(outPath);
   }
 
   @override

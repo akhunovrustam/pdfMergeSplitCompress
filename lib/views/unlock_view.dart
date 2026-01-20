@@ -1,4 +1,8 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart'; // for compute
+import 'package:flutter_pdf/services/pdf_service.dart';
+import 'package:flutter_pdf/utils/ui_utils.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
@@ -44,54 +48,52 @@ class _UnlockPdfViewState extends State<UnlockPdfView> {
       return;
     }
 
+    final String? outPath = await getDirectoryPath();
+    if (outPath == null) {
+      setState(() {
+        _statusMessage = 'Save cancelled.';
+      });
+      return;
+    }
+
     setState(() {
       _isProcessing = true;
       _statusMessage = 'Unlocking...';
     });
+    LoadingOverlay.show(context);
 
     try {
-      // 1. Load the existing PDF document with the password.
       final File inputHtmlFile = File(_selectedFilePath!);
-      final List<int> bytes = await inputHtmlFile.readAsBytes();
+      final String fileName = 'unlocked_${inputHtmlFile.uri.pathSegments.last}';
+      final String savePath = '$outPath/$fileName';
 
-      // Attempt to load with password
-      final PdfDocument document = PdfDocument(
-        inputBytes: bytes,
+      final args = UnlockArguments(
+        path: _selectedFilePath!,
         password: _passwordController.text,
+        outPath: savePath,
       );
 
-      // 2. Remove security settings.
-      // Setting these to empty string removes the password protection.
-      document.security.userPassword = '';
-      document.security.ownerPassword = '';
+      await compute(PdfService.unlockPdf, args);
 
-      // 3. Save the unlocked document.
-      final List<int> unlockedBytes = await document.save();
-      document.dispose();
-
-      // 4. Prompt user to choose a directory to save the file.
-      final String? directoryPath = await getDirectoryPath();
-
-      if (directoryPath != null) {
-        final String fileName =
-            'unlocked_${inputHtmlFile.uri.pathSegments.last}';
-        final String savePath = '$directoryPath/$fileName';
-        final File outputFile = File(savePath);
-        await outputFile.writeAsBytes(unlockedBytes);
+      if (mounted) {
         setState(() {
           _statusMessage = 'PDF unlocked and saved to:\n$savePath';
+          _isProcessing = false;
         });
-      } else {
-        setState(() {
-          _statusMessage = 'Save cancelled.';
-        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Saved to $savePath')));
+        await OpenFilex.open(savePath);
       }
     } catch (e) {
-      setState(() {
-        _statusMessage =
-            'Error unlocking PDF: $e\n(Check if password is correct)';
-      });
+      if (mounted) {
+        setState(() {
+          _statusMessage =
+              'Error unlocking PDF: $e\n(Check if password is correct)';
+        });
+      }
     } finally {
+      if (mounted) LoadingOverlay.hide(context);
       setState(() {
         _isProcessing = false;
       });

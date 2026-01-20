@@ -1,4 +1,8 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart'; // for compute
+import 'package:flutter_pdf/services/pdf_service.dart';
+import 'package:flutter_pdf/utils/ui_utils.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
@@ -46,55 +50,58 @@ class _EncryptPdfViewState extends State<EncryptPdfView> {
       return;
     }
 
+    final String? outPath = await getDirectoryPath();
+    if (outPath == null) {
+      setState(() {
+        _statusMessage = 'Save cancelled.';
+      });
+      return;
+    }
+
     setState(() {
       _isProcessing = true;
       _statusMessage = 'Encrypting...';
     });
+    LoadingOverlay.show(context);
 
     try {
-      // 1. Load the existing PDF document.
       final File inputHtmlFile = File(_selectedFilePath!);
-      final List<int> bytes = await inputHtmlFile.readAsBytes();
-      final PdfDocument document = PdfDocument(inputBytes: bytes);
+      final String fileName =
+          'encrypted_${inputHtmlFile.uri.pathSegments.last}';
+      final String savePath = '$outPath/$fileName';
 
-      // 2. Set the security settings.
-      final PdfSecurity security = document.security;
-      security.userPassword = _userPasswordController.text;
-      if (_ownerPasswordController.text.isNotEmpty) {
-        security.ownerPassword = _ownerPasswordController.text;
-      }
-      // Using RC4 128 bit as a standard compatible encryption. available options in syncfusion generally include rc4x40Bit, rc4x128Bit, aes.
-      security.algorithm = PdfEncryptionAlgorithm.rc4x128Bit;
+      final encryptArgs = EncryptArguments(
+        path: _selectedFilePath!,
+        userPassword: _userPasswordController.text,
+        ownerPassword: _ownerPasswordController.text,
+        outPath: savePath,
+      );
 
-      // 3. Save the encrypted document.
-      final List<int> encryptedBytes = await document.save();
-      document.dispose();
+      await compute(PdfService.encryptPdf, encryptArgs);
 
-      // 4. Prompt user to choose a directory to save the file.
-      final String? directoryPath = await getDirectoryPath();
-
-      if (directoryPath != null) {
-        final String fileName =
-            'encrypted_${inputHtmlFile.uri.pathSegments.last}';
-        final String savePath = '$directoryPath/$fileName';
-        final File outputFile = File(savePath);
-        await outputFile.writeAsBytes(encryptedBytes);
+      if (mounted) {
         setState(() {
           _statusMessage = 'PDF encrypted and saved to:\n$savePath';
+          _isProcessing = false;
         });
-      } else {
-        setState(() {
-          _statusMessage = 'Save cancelled.';
-        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Saved to $savePath')));
+        await OpenFilex.open(savePath);
       }
     } catch (e) {
-      setState(() {
-        _statusMessage = 'Error encrypting PDF: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _statusMessage = 'Error encrypting PDF: $e';
+        });
+      }
     } finally {
-      setState(() {
-        _isProcessing = false;
-      });
+      if (mounted) {
+        LoadingOverlay.hide(context);
+        setState(() {
+          _isProcessing = false;
+        });
+      }
     }
   }
 

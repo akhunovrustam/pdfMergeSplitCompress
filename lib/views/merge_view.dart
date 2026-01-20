@@ -1,13 +1,16 @@
 import 'dart:typed_data';
 import 'dart:io';
+import 'package:flutter/foundation.dart'; // for compute
+import 'package:flutter_pdf/services/pdf_service.dart';
 
 import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
-import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
+// import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
 import 'package:pdfx/pdfx.dart' as pdfx;
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:flutter_pdf/utils/pdf_security_helper.dart';
+import 'package:flutter_pdf/utils/ui_utils.dart';
 
 class MergeView extends StatefulWidget {
   const MergeView({Key? key}) : super(key: key);
@@ -122,31 +125,32 @@ class _MergeViewState extends State<MergeView> {
   Future<void> _mergePDFs() async {
     if (_pdfFiles.length < 2) return;
 
-    final out = sf.PdfDocument();
-    for (final f in _pdfFiles) {
-      final bytes = await f.readAsBytes();
-      final input = sf.PdfDocument(inputBytes: bytes);
-      for (int i = 0; i < input.pages.count; i++) {
-        out.pages.add().graphics.drawPdfTemplate(
-          input.pages[i].createTemplate(),
-          const Offset(0, 0),
-        );
-      }
-      input.dispose();
+    LoadingOverlay.show(context);
+    try {
+      final List<String> paths = _pdfFiles.map((f) => f.path).toList();
+      final dir = await _getDownloadsDir();
+      final path = '${dir.path}/merged_output.pdf';
+
+      // Run in background: Save directly to 'path'
+      await compute(
+        PdfService.mergePdfs,
+        MergeArguments(filePaths: paths, outPath: path),
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Merged PDF saved to:\n$path')));
+
+      await OpenFilex.open(path);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error merging PDFs: $e')));
+    } finally {
+      if (mounted) LoadingOverlay.hide(context);
     }
-    final data = out.saveSync();
-    out.dispose();
-
-    final dir = await _getDownloadsDir();
-    final path = '${dir.path}/merged_output.pdf';
-    await File(path).writeAsBytes(data, flush: true);
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Merged PDF saved to:\n$path')));
-
-    await OpenFilex.open(path);
   }
 
   @override

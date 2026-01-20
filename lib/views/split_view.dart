@@ -1,14 +1,17 @@
 // lib/views/split_view.dart
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_pdf/services/pdf_service.dart';
 
 import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:pdfx/pdfx.dart' as pdfx;
-import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
+// import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:flutter_pdf/utils/pdf_security_helper.dart';
+import 'package:flutter_pdf/utils/ui_utils.dart';
 
 class SplitView extends StatefulWidget {
   const SplitView({Key? key}) : super(key: key);
@@ -88,34 +91,40 @@ class _SplitViewState extends State<SplitView> {
   }
 
   // --- Save selected pages into a single new PDF ---
+  // --- Save selected pages into a single new PDF ---
   Future<void> _splitSelected() async {
     if (_pdfFile == null || _selected.isEmpty) return;
 
-    final bytes = await _pdfFile!.readAsBytes();
-    final input = sf.PdfDocument(inputBytes: bytes);
-    final output = sf.PdfDocument();
+    LoadingOverlay.show(context);
+    try {
+      final pages = _selected.toList()..sort();
+      final downloads = await _getDownloadsDir();
+      final outPath =
+          '${downloads.path}/${_baseName(_pdfFile!.name)}_split.pdf';
 
-    final pages = _selected.toList()..sort();
-    for (final pageNumber in pages) {
-      final src = input.pages[pageNumber - 1];
-      final tpl = src.createTemplate();
-      final newPage = output.pages.add();
-      newPage.graphics.drawPdfTemplate(tpl, const Offset(0, 0));
+      // Run in background
+      await compute(
+        PdfService.splitPdf,
+        SplitArguments(
+          sourcePath: _pdfFile!.path,
+          pageNumbers: pages,
+          outPath: outPath,
+        ),
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Saved to: $outPath')));
+      await OpenFilex.open(outPath);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error splitting PDF: $e')));
+    } finally {
+      if (mounted) LoadingOverlay.hide(context);
     }
-
-    final outBytes = output.saveSync();
-    input.dispose();
-    output.dispose();
-
-    final downloads = await _getDownloadsDir();
-    final outPath = '${downloads.path}/${_baseName(_pdfFile!.name)}_split.pdf';
-    await File(outPath).writeAsBytes(outBytes, flush: true);
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Saved to: $outPath')));
-    await OpenFilex.open(outPath);
   }
 
   // --- Helpers ---

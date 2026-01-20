@@ -1,6 +1,7 @@
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:math'; // For file size formatting
 
+import 'package:flutter/services.dart'; // For RootIsolateToken
 import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:path_provider/path_provider.dart';
@@ -19,10 +20,8 @@ class CompressView extends StatefulWidget {
 
 class _CompressViewState extends State<CompressView> {
   XFile? _selectedFile;
+  String? _fileSizeString;
   bool _busy = false;
-
-  // Default to rasterize for visible savings
-  bool _rasterize = true;
 
   // Levels for raster mode
   static const _levels = [
@@ -38,14 +37,26 @@ class _CompressViewState extends State<CompressView> {
       ],
     );
     if (file != null) {
+      final size = await File(file.path).length();
+
       final String? readablePath = await PdfSecurityHelper.ensureReadable(
         context,
         file.path,
       );
       if (readablePath == null) return;
 
-      setState(() => _selectedFile = XFile(readablePath, name: file.name));
+      setState(() {
+        _selectedFile = XFile(readablePath, name: file.name);
+        _fileSizeString = _formatBytes(size);
+      });
     }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return "0 B";
+    const suffixes = ["B", "KB", "MB", "GB", "TB"];
+    var i = (log(bytes) / log(1024)).floor();
+    return '${(bytes / pow(1024, i)).toStringAsFixed(2)} ${suffixes[i]}';
   }
 
   Future<Directory> _downloadsDir() async {
@@ -78,21 +89,41 @@ class _CompressViewState extends State<CompressView> {
     final inSize = await inFile.length();
 
     try {
-      if (_rasterize) {
-        final label = level['label'] as String;
-        double scale = level['scale'] as double;
-        int jpeg = level['jpeg'] as int;
+      // Always Rasterize
+      final label = level['label'] as String;
+      double scale = level['scale'] as double;
+      int jpeg = level['jpeg'] as int;
 
-        // Prepare temp output path
-        final downloads = await _downloadsDir();
-        final base = _selectedFile!.name.replaceAll(
-          RegExp(r'\.pdf$', caseSensitive: false),
-          '',
-        );
-        final suffix = '_${label.toLowerCase()}';
-        final outPath = '${downloads.path}/${base}_compressed$suffix.pdf';
+      // Prepare temp output path
+      final downloads = await _downloadsDir();
+      final base = _selectedFile!.name.replaceAll(
+        RegExp(r'\.pdf$', caseSensitive: false),
+        '',
+      );
+      final suffix = '_${label.toLowerCase()}';
+      final outPath = '${downloads.path}/${base}_compressed$suffix.pdf';
 
-        // First attempt
+      // First attempt
+      await compute(
+        PdfService.compressRaster,
+        CompressRasterArguments(
+          path: inPath,
+          scale: scale,
+          quality: jpeg,
+          outPath: outPath,
+          token: RootIsolateToken.instance!,
+        ),
+      );
+
+      // Check size
+      File outFile = File(outPath);
+      int outSize = await outFile.length();
+
+      if (outSize >= (inSize * 0.98)) {
+        // Try stronger
+        scale = (scale * 0.9).clamp(0.2, 1.0);
+        jpeg = (jpeg - 10).clamp(40, 95);
+
         await compute(
           PdfService.compressRaster,
           CompressRasterArguments(
@@ -100,68 +131,13 @@ class _CompressViewState extends State<CompressView> {
             scale: scale,
             quality: jpeg,
             outPath: outPath,
+            token: RootIsolateToken.instance!,
           ),
         );
-
-        // Check size
-        File outFile = File(outPath);
-        int outSize = await outFile.length();
-
-        if (outSize >= (inSize * 0.98)) {
-          // Try stronger
-          scale = (scale * 0.9).clamp(0.2, 1.0);
-          jpeg = (jpeg - 10).clamp(40, 95);
-
-          await compute(
-            PdfService.compressRaster,
-            CompressRasterArguments(
-              path: inPath,
-              scale: scale,
-              quality: jpeg,
-              outPath: outPath,
-            ),
-          );
-          outSize = await outFile.length();
-        }
-
-        await _showResult(outPath, inSize, outSize);
-      } else {
-        // SAFE MODE
-        final downloads = await _downloadsDir();
-        final base = _selectedFile!.name.replaceAll(
-          RegExp(r'\.pdf$', caseSensitive: false),
-          '',
-        );
-        String outPath = '${downloads.path}/${base}_compressed_safe.pdf';
-
-        await compute(
-          PdfService.compressSafe,
-          CompressSafeArguments(path: inPath, outPath: outPath),
-        );
-
-        File outFile = File(outPath);
-        int outSize = await outFile.length();
-
-        if (outSize >= (inSize * 0.98)) {
-          // Fallback to gentle raster
-          outPath = '${downloads.path}/${base}_compressed_safe_fallback.pdf';
-
-          await compute(
-            PdfService.compressRaster,
-            CompressRasterArguments(
-              path: inPath,
-              scale: 0.9,
-              quality: 85,
-              outPath: outPath,
-            ),
-          );
-
-          outFile = File(outPath);
-          outSize = await outFile.length();
-        }
-
-        await _showResult(outPath, inSize, outSize);
+        outSize = await outFile.length();
       }
+
+      await _showResult(outPath, inSize, outSize);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -234,30 +210,18 @@ class _CompressViewState extends State<CompressView> {
                     const SizedBox(height: 12),
                     Text(
                       'Selected: $fileName',
-                      style: const TextStyle(fontSize: 16),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
+                    if (_fileSizeString != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text('Size: $_fileSizeString'),
+                      ),
 
                     const SizedBox(height: 16),
-                    // Mode toggle
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ChoiceChip(
-                            selected: !_rasterize,
-                            label: const Text('Keep text (safe)'),
-                            onSelected: (v) => setState(() => _rasterize = !v),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: ChoiceChip(
-                            selected: _rasterize,
-                            label: const Text('Max shrink (rasterize)'),
-                            onSelected: (v) => setState(() => _rasterize = v),
-                          ),
-                        ),
-                      ],
-                    ),
 
                     const SizedBox(height: 20),
                     // Equal-width buttons: Low -> Recommended -> Extreme

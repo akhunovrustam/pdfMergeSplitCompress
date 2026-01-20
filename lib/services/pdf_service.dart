@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/services.dart'; // For BackgroundIsolateBinaryMessenger
 import 'dart:ui'; // for Offset
 import 'dart:typed_data';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
@@ -57,19 +58,14 @@ class CompressRasterArguments {
   final double scale;
   final int quality;
   final String outPath;
+  final RootIsolateToken token;
   CompressRasterArguments({
     required this.path,
     required this.scale,
     required this.quality,
     required this.outPath,
+    required this.token,
   });
-}
-
-/// Arguments for Compression (Safe Mode)
-class CompressSafeArguments {
-  final String path;
-  final String outPath;
-  CompressSafeArguments({required this.path, required this.outPath});
 }
 
 class PdfService {
@@ -165,23 +161,11 @@ class PdfService {
     await File(args.outPath).writeAsBytes(outBytes, flush: true);
   }
 
-  // --- COMPRESS (Safe) ---
-  static Future<void> compressSafe(CompressSafeArguments args) async {
-    final File file = File(args.path);
-    final List<int> bytes = await file.readAsBytes();
-    final PdfDocument document = PdfDocument(inputBytes: bytes);
-
-    document.compressionLevel = PdfCompressionLevel.best;
-    document.fileStructure.incrementalUpdate = false;
-
-    final List<int> outBytes = await document.save();
-    document.dispose();
-
-    await File(args.outPath).writeAsBytes(outBytes, flush: true);
-  }
-
   // --- COMPRESS (Raster) ---
   static Future<void> compressRaster(CompressRasterArguments args) async {
+    // Ensure we can use platform channels (pdfx plugin) in this isolate
+    BackgroundIsolateBinaryMessenger.ensureInitialized(args.token);
+
     final pdfxDoc = await pdfx.PdfDocument.openFile(args.path);
     final outputPdf = PdfDocument();
 
